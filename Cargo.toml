@@ -1,0 +1,16 @@
+[package]
+name = "loudr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = "4"
+serde = { version = "1.0.201", features = ["derive"] }
+dotenv = "0.15.0"
+env_logger = "0.11.3"
+log = "0.4"
+regex = "1.10"
+base64 = "0.22.1"
+uuid = { version = "1.10.0", features = ["v4", "fast-rng"] }
+async-std = "1.12.0"
+actix-cors = "0.7"
