@@ -1,20 +1,28 @@
 use std::collections::HashMap;
-use std::fs;
+use std::{env, fs};
 use std::process::Command;
 
+use actix_web::web::Data;
+use reqwest::Client;
+use serde_json::json;
+
+use super::uuid_generator;
 use super::writer_service::write_file;
 
-pub fn compile_cpp_to_assembly(
+pub async fn compile_cpp_to_assembly(
     data: String,
     functions: Vec<String>,
     compiler: String,
     args: Vec<String>,
+    client: Data<Client>
 ) -> Result<HashMap<String, Vec<String>>, Box<dyn std::error::Error>> {
-    let file_path = write_file(data);
+
+    let uuid = uuid_generator::get_uuid();
+    let file_path = write_file(data.clone(), uuid);
 
     let mut output_map: HashMap<String, Vec<String>> = HashMap::new();
 
-    let program_output_name = format!("/storage/program-{}", uuid::Uuid::new_v4());
+    let program_output_name = format!("/storage/program-{}", uuid);
 
     // Compile C++ to assembly using g++
     let output = compile_code(
@@ -48,6 +56,21 @@ pub fn compile_cpp_to_assembly(
 
     fs::remove_file(file_path.clone())?;
 
+    let url = env::var("WRITER_URL").expect("Cannot find WRITER_URL");
+
+    let body = json!({
+        "file": data,
+        "name": uuid.to_string()
+    });
+
+    let _ = client
+    .post(url)
+    .json(&body)
+    .send()
+    .await?;
+
+
+
     Ok(output_map)
 }
 
@@ -71,14 +94,14 @@ fn compile_code(
 
 fn get_assembly(functions: Vec<String>, output_file_name: &String) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error>> {
     // gdb -batch -ex 'file program' -ex 'disassemble main'
-    // ["-batch", "-ex", "disassembly-flavor intel", "-ex", "/storage/program-4d9a2fce-a04a-4aa1-8e63-1a30c564f715", "-ex", "disassemble main"]
+    // ["-batch", "-ex", "disassembly-flavor intel", "-ex", "file /storage/program-438f7b8f-3a50-4ab3-96e3-2a7d728a68ed", "-ex", "disassemble test"]
     let mut output: Vec<Vec<String>> = Vec::new();
 
     for function in functions {
         let mut args: Vec<String> = vec![
             "-batch".to_string(),
             "-ex".to_string(),
-            "disassembly-flavor intel".to_string(),
+            "set disassembly-flavor intel".to_string(),
             "-ex".to_string(),
             format!("file {}", output_file_name.to_string()),
         ];
@@ -86,12 +109,14 @@ fn get_assembly(functions: Vec<String>, output_file_name: &String) -> Result<Vec
         args.push("-ex".to_string());
         args.push("disassemble ".to_owned() + &function);
 
-        println!("{:?}", args);
+        println!("{:?}", args.join(" ").to_string());
 
         let output_local = Command::new("gdb").args(&args).output()?;
 
+        println!("{:?}", output_local);
+
         if !output_local.status.success() {
-            return Err(format!("Failed to objdump: {:?}", output).into());
+            return Err(format!("Failed to run gdb: {:?}", output).into());
         }
 
         let mut disassembly_lines: Vec<String> = Vec::new();

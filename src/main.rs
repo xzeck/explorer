@@ -5,8 +5,9 @@ mod dto;
 
 use std::env;
 use actix_cors::Cors;
-use actix_web::{http, middleware::{self, Logger}, App, HttpServer};
+use actix_web::{http, middleware::{self, Logger}, App, HttpServer, web};
 use api::code_runner_controller;
+use reqwest::Client;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()>{
@@ -36,11 +37,15 @@ async fn main() -> std::io::Result<()>{
               .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
               .allowed_header(http::header::CONTENT_TYPE)
               .max_age(3600);
+        
+        let client = web::Data::new(Client::new());
+
 
         App::new()
         .wrap(middleware::NormalizePath::trim())
         .wrap(logger)
         .wrap(cors)
+        .app_data(client)
         .service(code_runner_controller::get_scope())
     })
     .bind((host_address, port))?

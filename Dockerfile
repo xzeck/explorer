@@ -7,7 +7,7 @@
 # Want to help us make this template better? Share your feedback here: https://forms.gle/ybq9Krt8jtBL3iCk7
 
 ARG RUST_VERSION=1.79.0
-ARG APP_NAME=loudr
+ARG APP_NAME=explorer
 
 ################################################################################
 # Create a stage for building the application.
@@ -19,7 +19,7 @@ ARG APP_NAME
 WORKDIR /app
 
 # Install host build dependencies.
-RUN apk add --no-cache clang lld musl-dev git gcc g++ gdb llvm
+RUN apk add --no-cache clang lld musl-dev git libressl-dev
 
 
 # Build the application.
