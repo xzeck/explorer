@@ -1,0 +1,514 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for the Explorer architecture - 5409 - Term Project
+
+# Mappings for LabRole
+Mappings:
+  ResourceTags:
+    project-tags:
+      project: Explorer
+  Role:
+    LabRole:
+      Arn: arn:aws:iam::148764965570:role/LabRole
+
+# VPC and Subnet CIDRs
+Parameters:
+  VPCCIDR:
+    Type: String
+    Default: 172.31.0.0/16
+  SubnetCIDRA:
+    Type: String
+    Default: 172.31.80.0/20
+  SubnetCIDRB:
+    Type: String
+    Default: 172.31.16.0/20
+  SubnetCIDRC:
+    Type: String
+    Default: 172.31.32.0/20
+
+# Resource Start
+Resources:
+
+  # VPC and other configs for networking
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPCCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref SubnetCIDRA
+      AvailabilityZone: us-east-1a
+
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref SubnetCIDRB
+      AvailabilityZone: us-east-1b
+
+  SubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref SubnetCIDRC
+      AvailabilityZone: us-east-1c
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetA
+      RouteTableId: !Ref RouteTable
+
+  # Redis security group, all ingress connections allowed
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Redis cluster
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: -1
+          CidrIpv6: '::/0'
+
+  # Main security group for EC2
+  5409TermProjectSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for all other components
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref RedisSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+
+  # Bucket to store the code that is injected into the system
+  ExplorerCodeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: 5409-term-project-explorer-code-storage-cloud-formation
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+# Writer lambda to write data into S3
+  WriterLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: Writer
+      Timeout: 30
+      Handler: index.lambda_handler
+      Role: !FindInMap
+        - Role
+        - LabRole
+        - Arn
+      Code:
+        ZipFile: |
+          import os
+          import boto3
+          import json
+          s3 = boto3.client('s3')
+          def response_generator(statusCode=200, message=""):
+              return {
+                  'statusCode': statusCode,
+                  'body': {
+                      'message': message
+                  },
+                  "headers": {
+                      "Content-Type": "application/json"
+                  }
+              }
+          def lambda_handler(event, context):
+              S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME')
+              body = json.loads(event.get('body'))
+              event = body
+              file = event.get('file')
+              name = event.get('name')
+              print(file)
+              print(name)
+              try:
+                  s3.put_object(Body=file, Bucket=S3_BUCKET_NAME, Key=name)
+              except Exception as e:
+                  print(e)
+                  return response_generator(400, str(e))
+              return response_generator(200, "Success")
+      Runtime: python3.12
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref ExplorerCodeBucket
+      Tags:
+        - Key: project
+          Value: !FindInMap
+            - ResourceTags
+            - project-tags
+            - project
+
+  # Permission for API Gateway to invoke the lambda
+  WriterLambdaApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WriterLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*
+        - ApiGatewayRestApi: !Ref ExplorerApiGateway
+
+  # Redis subnet group
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      CacheSubnetGroupName: RedisSubnetGroup
+      Description: Subnet group for ElastiCache Redis
+      SubnetIds:
+        - !Ref SubnetA
+        - !Ref SubnetB
+        - !Ref SubnetC
+
+  # Redis cluster and configs
+  RedisCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      Engine: redis
+      ClusterName: redis-cluster
+      CacheNodeType: cache.t3.small
+      NumCacheNodes: 1
+      PreferredAvailabilityZone: us-east-1b
+      VpcSecurityGroupIds:
+        - !Ref RedisSecurityGroup
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      Port: 6379
+
+  # Creating API Gateway
+  ExplorerApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: ExplorerAPI
+      Description: API for Explorer application
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+# Cache lambda which checks for cache in Redis or connects to EC2
+  CacheLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: Cache
+      Timeout: 30
+      Handler: lambda_function.lambda_handler
+      Role: !FindInMap [Role, LabRole, Arn]
+      Code:
+        S3Bucket: 5409-term-project-lambda-storage
+        S3Key: cache.zip
+      Runtime: python3.12
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 5409TermProjectSecurityGroup
+        SubnetIds:
+          - !Ref SubnetA
+          - !Ref SubnetB
+          - !Ref SubnetC
+      Environment:
+        Variables:
+          EC2_ENDPOINT_URL: 
+            Fn::Join:
+              - ""
+              - 
+                - "http://"
+                - !GetAtt EC2Instance.PrivateIp
+          REDIS_PORT: !GetAtt RedisCluster.RedisEndpoint.Port
+          ELASTICACHE_ENDPOINT: !GetAtt RedisCluster.RedisEndpoint.Address
+
+  # Cache lambda invoke Permission
+  CacheLambdaApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CacheLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*
+        - ApiGatewayRestApi: !Ref ExplorerApiGateway
+
+  # Top level path '/explorer'
+  ExplorerResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ExplorerApiGateway
+      ParentId: !GetAtt ExplorerApiGateway.RootResourceId
+      PathPart: explorer
+
+  # Compile resource for '/explorer/compile'
+  CompileResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ExplorerApiGateway
+      ParentId: !Ref ExplorerResource
+      PathPart: compile
+
+  # OPTIONS method for CORS support
+  CompileOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: '''Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'''
+              method.response.header.Access-Control-Allow-Methods: '''GET,POST,OPTIONS'''
+              method.response.header.Access-Control-Allow-Origin: '''*'''
+            ResponseTemplates:
+              application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+      ResourceId: !Ref CompileResource
+      RestApiId: !Ref ExplorerApiGateway
+
+  # POST method for '/explorer/compile'
+  CompileMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ExplorerApiGateway
+      ResourceId: !Ref CompileResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - LambdaArn: !GetAtt CacheLambda.Arn
+
+  # Resource for '/explorer/write'
+  WriterResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ExplorerApiGateway
+      ParentId: !Ref ExplorerResource
+      PathPart: write
+
+  # OPTIONS method for '/explorer/write' for CORS
+  WriterOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: '''Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'''
+              method.response.header.Access-Control-Allow-Methods: '''GET,POST,OPTIONS'''
+              method.response.header.Access-Control-Allow-Origin: '''*'''
+            ResponseTemplates:
+              application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+      ResourceId: !Ref WriterResource
+      RestApiId: !Ref ExplorerApiGateway
+
+  # POST method for '/explorer/write'
+  WriterMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ExplorerApiGateway
+      ResourceId: !Ref WriterResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - LambdaArn: !GetAtt WriterLambda.Arn
+
+  # Deploying the gateway to 'prod' stage
+  ExplorerApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - CompileMethod
+      - CompileOptionsMethod
+      - CacheLambdaApiPermission
+      - WriterMethod
+      - WriterOptionsMethod
+      - WriterLambdaApiPermission
+    Properties:
+      RestApiId: !Ref ExplorerApiGateway
+      StageName: prod
+
+  # EBS configs
+  ElasticBeanstalkApplication:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      ApplicationName: Explorer
+
+  # Creating the EBS application
+  ElasticBeanstalkApplicationVersion:
+    Type: AWS::ElasticBeanstalk::ApplicationVersion
+    Properties:
+      ApplicationName: !Ref ElasticBeanstalkApplication
+      Description: Frontend Application
+      SourceBundle:
+        S3Bucket: 5409-term-project-lambda-storage
+        S3Key: frontend.zip
+
+  # EC2 instance for backend
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0b72821e2f351e396
+      KeyName: A2-5409-EC2
+      InstanceType: t3.small
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: 'true'
+          DeviceIndex: '0'
+          GroupSet:
+            - !Ref 5409TermProjectSecurityGroup
+          SubnetId: !Ref SubnetA
+      Tags:
+        - Key: project
+          Value: !FindInMap
+            - ResourceTags
+            - project-tags
+            - project
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          sudo yum update -y
+          sudo yum install docker -y
+          sudo chkconfig docker on
+          sudo service docker start
+          sudo usermod -a -G docker ec2-user
+          sudo curl -L https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
+          sudo chmod 666 /var/run/docker.sock
+          sudo mkdir /docker
+          sudo cat <<EOL > /docker/docker-compose.yml
+          services:
+            server:
+              image: xzeck/a3-5409-term-project:latest
+              build:
+                context: .
+                target: final
+              ports:
+                - 80:6000
+              restart: always
+              environment:
+                - HOST_ADDRESS=0.0.0.0
+                - PORT=6000
+                - BASH_PATH=/bin/bash
+                - PROGRAM_OUTPUT_NAME_PREFIX=program
+                - TEMP_FILE_PREFIX=program
+                - WRITER_URL=https://${ExplorerApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/explorer/write
+              volumes:
+                - /storage:/storage
+          EOL
+          cd /docker
+          docker-compose up -d
+
+  # Creating the EBS environment
+  ElasticBeanstalkEnvironment:
+    Type: AWS::ElasticBeanstalk::Environment
+    Properties:
+      ApplicationName: !Ref ElasticBeanstalkApplication
+      EnvironmentName: Explorer-Frontend-Environment
+      VersionLabel: !Ref ElasticBeanstalkApplicationVersion
+      SolutionStackName: 64bit Amazon Linux 2023 v6.1.8 running Node.js 20
+      OptionSettings:
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: InstanceType
+          Value: t3.small
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: IamInstanceProfile
+          Value: LabInstanceProfile
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: EC2KeyName
+          Value: A2-5409-EC2
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: REACT_APP_API_URL
+          Value: !Sub https://${ExplorerApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/explorer/compile
+
+  # Enabling GuardDuty
+  GuardDuty:
+    Type: AWS::GuardDuty::Detector
+    Properties:
+      Enable: true
+      FindingPublishingFrequency: SIX_HOURS
+
+Outputs:
+  RedisSecurityGroupId:
+    Value: !Ref RedisSecurityGroup
+    Export:
+      Name: RedisSecurityGroupId
+  EnvironmentURL:
+    Description: URL of the Elastic Beanstalk Environment
+    Value: !Join
+      - ''
+      - - http://
+        - !GetAtt ElasticBeanstalkEnvironment.EndpointURL

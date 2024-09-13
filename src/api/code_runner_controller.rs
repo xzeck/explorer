@@ -13,7 +13,7 @@ pub fn get_scope() -> Scope {
 async fn compile(payload: Json<InputDTO>, client: Data<Client>) -> impl Responder {
 
     
-    let input = payload.0;
+    let input = payload.into_inner();
 
     let base_64_code = input.get_base64_code().to_string();
     let functions = input.get_functions().clone();

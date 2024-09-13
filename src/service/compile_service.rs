@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use std::{env, fs};
 use std::process::Command;
+use std::{env, fs};
 
 use actix_web::web::Data;
 use reqwest::Client;
 use serde_json::json;
+use tokio;
 
 use super::uuid_generator;
 use super::writer_service::write_file;
@@ -14,9 +15,8 @@ pub async fn compile_cpp_to_assembly(
     functions: Vec<String>,
     compiler: String,
     args: Vec<String>,
-    client: Data<Client>
+    client: Data<Client>,
 ) -> Result<HashMap<String, Vec<String>>, Box<dyn std::error::Error>> {
-
     let uuid = uuid_generator::get_uuid();
     let file_path = write_file(data.clone(), uuid);
 
@@ -29,7 +29,7 @@ pub async fn compile_cpp_to_assembly(
         file_path.clone(),
         program_output_name.to_string(),
         compiler.clone(),
-        args.clone()
+        args.clone(),
     );
 
     match output {
@@ -63,13 +63,25 @@ pub async fn compile_cpp_to_assembly(
         "name": uuid.to_string()
     });
 
-    let _ = client
-    .post(url)
-    .json(&body)
-    .send()
-    .await?;
+    let client_clone = client.clone();
 
 
+    tokio::spawn(async move {
+        let res = client_clone.post(url)
+                            .json(&body)
+                            .send()
+                            .await;
+
+        match res {
+            Ok(val) => {
+                println!("Ok: {:?}", val)
+            },
+            Err(e) => {
+                print!("Error: {:?}", e);
+            }
+        }
+
+    });
 
     Ok(output_map)
 }
@@ -92,7 +104,10 @@ fn compile_code(
     Ok(())
 }
 
-fn get_assembly(functions: Vec<String>, output_file_name: &String) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error>> {
+fn get_assembly(
+    functions: Vec<String>,
+    output_file_name: &String,
+) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error>> {
     // gdb -batch -ex 'file program' -ex 'disassemble main'
     // ["-batch", "-ex", "disassembly-flavor intel", "-ex", "file /storage/program-438f7b8f-3a50-4ab3-96e3-2a7d728a68ed", "-ex", "disassemble test"]
     let mut output: Vec<Vec<String>> = Vec::new();
@@ -109,11 +124,7 @@ fn get_assembly(functions: Vec<String>, output_file_name: &String) -> Result<Vec
         args.push("-ex".to_string());
         args.push("disassemble ".to_owned() + &function);
 
-        println!("{:?}", args.join(" ").to_string());
-
         let output_local = Command::new("gdb").args(&args).output()?;
-
-        println!("{:?}", output_local);
 
         if !output_local.status.success() {
             return Err(format!("Failed to run gdb: {:?}", output).into());

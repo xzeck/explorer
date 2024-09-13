@@ -6,6 +6,7 @@ services:
       target: final
     ports:
       - 80:6000
+    restart: always
     environment:
       - HOST_ADDRESS=0.0.0.0
       - PORT=6000
@@ -13,6 +14,6 @@ services:
       - PROGRAM_OUTPUT_NAME_PREFIX=program
       - TEMP_FILE_PREFIX=program
       - READER_LAMBDA_URL=https://jltb4w3yoyc6ljddgm4ffoje4q0wnwms.lambda-url.us-east-1.on.aws/
-      - WRITER_URL=https://56pjpm4vx4tzrfofnbplhnghty0bzsmq.lambda-url.us-east-1.on.aws/
+      - WRITER_URL=${WRITER_URL}
     volumes:
       - /storage:/storage
